@@ -71,7 +71,7 @@ void setup() {
             Serial.println("Ethernet cable is not connected.");
         }
         // try to congifure using IP address instead of DHCP:
-        Ethernet.begin(mac, ip, myDns);
+        Ethernet.begin(mac, Ethernet.localIP());
     } else {
         Serial.print("  DHCP assigned IP ");
         Serial.println(Ethernet.localIP());
