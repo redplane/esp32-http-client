@@ -30,7 +30,7 @@ class WeatherService {
 public:
 
     // Get weather status
-    int getWeatherStatus(EthernetClient *client);
+    int getWeatherStatus(Client *client);
 };
 
 #endif //ESP32_HTTP_CLIENT_WEATHERSERVICE_H
