@@ -5,3 +5,4 @@ cmake-build-*/
 /.pio
 /cmake-build-debug
 /.idea
+/CMakeListsPrivate.txt
