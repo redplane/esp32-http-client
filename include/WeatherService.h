@@ -7,6 +7,7 @@
 
 #include <Ethernet.h>
 #include <Client.h>
+#include <HttpService.h>
 
 // Weather status
 #define WEATHER_STATUS_UNKNOWN  -1
@@ -25,7 +26,7 @@
 
 #define WEATHER_END_POINT       "http://nm-solution-ltd-staging.azurewebsites.net"
 
-class WeatherService {
+class WeatherService : protected HttpService {
 
 public:
 

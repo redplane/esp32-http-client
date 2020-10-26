@@ -3,6 +3,10 @@
 
 //#region Constructor
 
+HttpHeader::HttpHeader() {
+
+}
+
 HttpHeader::HttpHeader(const char *key, const char *value) {
 
     this->_key = new char[strlen(key)];

@@ -20,6 +20,8 @@ public:
     // Get value.
     void getValue(char *value, int &length);
 
+    HttpHeader();
+
     HttpHeader(const char *key, const char *value);
 };
 

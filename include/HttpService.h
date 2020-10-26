@@ -6,6 +6,7 @@
 #include <HttpClient.h>
 #include "HttpHeader.h"
 #include <ArduinoJson.h>
+#include <HttpResponse.h>
 
 class HttpService {
 
@@ -17,7 +18,7 @@ private:
 protected:
 
     // Append headers into http client.
-    void appendHeaders(HttpClient *httpClient, LinkedList<HttpHeader> *httpHeaders);
+//    void appendHeaders(HttpClient *httpClient, LinkedList<HttpHeader> *httpHeaders);
 
 public:
 
@@ -28,10 +29,9 @@ public:
     void getUserAgent(char *agent, int &length);
 
     // Send request to server.
-    int sendRequest(Client network, const char *host, uint16_t port, const char *httpMethod, const char *path,
-                    char *content, int *contentLength,
-                    JsonDocument *document = nullptr,
-                    const char *agent = nullptr, LinkedList<HttpHeader> *httpHeaders = nullptr);
+    HttpResponse sendRequest(Client *network, const char *host, uint16_t port, const char *httpMethod, const char *path,
+                             JsonDocument *document = nullptr,
+                             const char *agent = nullptr);
 
     //#region Constructor
 
