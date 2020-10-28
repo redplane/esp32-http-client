@@ -30,8 +30,7 @@ public:
 
     // Send request to server.
     HttpResponse sendRequest(Client *network, const char *host, uint16_t port, const char *httpMethod, const char *path,
-                             JsonDocument *document = nullptr,
-                             const char *agent = nullptr);
+                             JsonDocument *document = nullptr);
 
     //#region Constructor
 

@@ -6,6 +6,7 @@
 #define ESP32_HTTP_CLIENT_HTTP_RESPONSE_H
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 class HttpResponse {
 
@@ -28,6 +29,7 @@ public:
 
     // Get content
     String getContent();
+
 };
 
 #endif //ESP32_HTTP_CLIENT_HTTP_RESPONSE_H

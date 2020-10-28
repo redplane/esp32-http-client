@@ -91,13 +91,12 @@
 // Get weather status.
 int WeatherService::getWeatherStatus(Client *client) {
 
-    int err = 0;
     // Name of the server we want to connect to
-    const char kHostname[] = "nm-solution-ltd-staging.azurewebsites.net";
+    const char kHostname[] = "93ffc87842ee.ngrok.io";
 
     // Path to download (this is the bit after the hostname in the URL
     // that you want to download
-    const char kPath[] = "/swagger/index.html";
+    const char kPath[] = "/api/weather/status/search";
 
     // Number of milliseconds to wait without receiving any data before we give up
     const int kNetworkTimeout = 30 * 1000;
@@ -105,16 +104,17 @@ int WeatherService::getWeatherStatus(Client *client) {
     // Number of milliseconds to wait if no data is available before trying again
     const int kNetworkDelay = 1000;
 
-    HttpClient httpClient(*client);
+    StaticJsonDocument<128> document;
+    document["cityCode"] = "HANOI";
 
-    HttpResponse httpResponse = this->sendRequest(client, kHostname, 443, HTTP_METHOD_GET, kPath);
+    HttpResponse httpResponse = this->sendRequest(client, kHostname, 80, HTTP_METHOD_POST, kPath, &document);
+
     Serial.print("Http status code: ");
     Serial.println(httpResponse.getStatusCode());
 
     Serial.print("Http content: ");
     Serial.println(httpResponse.getContent());
 
-    httpClient.stop();
     return WEATHER_STATUS_UNKNOWN;
 
 }

@@ -1,8 +1,8 @@
 #include "HttpService.h"
-#include <HttpClient.h>
 #include <LinkedList.h>
 #include <ArduinoJson.h>
 #include <HttpResponse.h>
+#include <ArduinoHttpClient.h>
 
 #define HTTP_LOG   1
 
@@ -38,8 +38,7 @@
 
 HttpResponse HttpService::sendRequest(Client *network, const char *host, uint16_t port,
                                       const char *httpMethod, const char *path,
-                                      JsonDocument *contentDocument,
-                                      const char *agent) {
+                                      JsonDocument *contentDocument) {
 
     HttpResponse defaultHttpResponse;
 
@@ -47,20 +46,27 @@ HttpResponse HttpService::sendRequest(Client *network, const char *host, uint16_
     const int kNetworkTimeout = 30 * 1000;
 
     // Initialize http client for sending requests.
-    HttpClient httpClient(*network);
+    HttpClient httpClient(*network, host, port);
 
     // Http headers are defined.
     // this->appendHeaders(&httpClient, httpHeaders);
 //
-//    if (content != nullptr) {
-//        // Append request body
-//        String body;
-//        serializeJson(*contentDocument, body);
-//        httpClient.println(body);
-//    }
+
+    String body;
+
+    if (contentDocument != nullptr) {
+        // Append request body
+
+        serializeJson(*contentDocument, body);
+
+        Serial.println("Serialized content: ");
+        Serial.println(body);
+    }
 
     // Send request to server.
-    int statusCode = httpClient.startRequest(host, port, path, httpMethod, agent == nullptr ? this->_userAgent : agent);
+    char contentType[] = "application/json";
+    int statusCode = httpClient.startRequest(path, httpMethod,
+                                             contentType, body.length(), (const byte *) body.c_str());
 
     if (statusCode != 0) {
         httpClient.stop();
@@ -107,7 +113,7 @@ HttpResponse HttpService::sendRequest(Client *network, const char *host, uint16_
 
 
     String httpContent = httpClient.readString();
-    HttpResponse httpResponse(statusCode, httpContent);
+    HttpResponse httpResponse(httpStatusCode, httpContent);
 
     httpClient.stop();
     return httpResponse;

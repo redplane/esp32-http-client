@@ -4,44 +4,41 @@
 
 #include "HttpClient.h"
 #include "b64.h"
-#ifdef PROXY_ENABLED // currently disabled as introduces dependency on Dns.h in Ethernet
-#include <Dns.h>
-#endif
 
 // Initialize constants
 const char* HttpClient::kUserAgent = "Arduino/2.2.0";
 const char* HttpClient::kContentLengthPrefix = HTTP_HEADER_CONTENT_LENGTH ": ";
+const char* HttpClient::kTransferEncodingChunked = HTTP_HEADER_TRANSFER_ENCODING ": " HTTP_HEADER_VALUE_CHUNKED;
 
-#ifdef PROXY_ENABLED // currently disabled as introduces dependency on Dns.h in Ethernet
-HttpClient::HttpClient(Client& aClient, const char* aProxy, uint16_t aProxyPort)
- : iClient(&aClient), iProxyPort(aProxyPort)
-{
-  resetState();
-  if (aProxy)
-  {
-    // Resolve the IP address for the proxy
-    DNSClient dns;
-    dns.begin(Ethernet.dnsServerIP());
-    // Not ideal that we discard any errors here, but not a lot we can do in the ctor
-    // and we'll get a connect error later anyway
-    (void)dns.getHostByName(aProxy, iProxyAddress);
-  }
-}
-#else
-HttpClient::HttpClient(Client& aClient)
- : iClient(&aClient), iProxyPort(0)
+HttpClient::HttpClient(Client& aClient, const char* aServerName, uint16_t aServerPort)
+ : iClient(&aClient), iServerName(aServerName), iServerAddress(), iServerPort(aServerPort),
+   iConnectionClose(true), iSendDefaultRequestHeaders(true)
 {
   resetState();
 }
-#endif
+
+HttpClient::HttpClient(Client& aClient, const String& aServerName, uint16_t aServerPort)
+ : HttpClient(aClient, aServerName.c_str(), aServerPort)
+{
+}
+
+HttpClient::HttpClient(Client& aClient, const IPAddress& aServerAddress, uint16_t aServerPort)
+ : iClient(&aClient), iServerName(NULL), iServerAddress(aServerAddress), iServerPort(aServerPort),
+   iConnectionClose(true), iSendDefaultRequestHeaders(true)
+{
+  resetState();
+}
 
 void HttpClient::resetState()
 {
   iState = eIdle;
   iStatusCode = 0;
-  iContentLength = 0;
+  iContentLength = kNoContentLengthHeader;
   iBodyLengthConsumed = 0;
   iContentLengthPtr = kContentLengthPrefix;
+  iTransferEncodingChunkedPtr = kTransferEncodingChunked;
+  iIsChunked = false;
+  iChunkLength = 0;
   iHttpResponseTimeout = kHttpResponseTimeout;
 }
 
@@ -51,98 +48,102 @@ void HttpClient::stop()
   resetState();
 }
 
+void HttpClient::connectionKeepAlive()
+{
+  iConnectionClose = false;
+}
+
+void HttpClient::noDefaultRequestHeaders()
+{
+  iSendDefaultRequestHeaders = false;
+}
+
 void HttpClient::beginRequest()
 {
   iState = eRequestStarted;
 }
 
-int HttpClient::startRequest(const char* aServerName, uint16_t aServerPort, const char* aURLPath, const char* aHttpMethod, const char* aUserAgent)
+int HttpClient::startRequest(const char* aURLPath, const char* aHttpMethod, 
+                                const char* aContentType, int aContentLength, const byte aBody[])
 {
+    if (iState == eReadingBody || iState == eReadingChunkLength || iState == eReadingBodyChunk)
+    {
+        flushClientRx();
+
+        resetState();
+    }
+
     tHttpState initialState = iState;
+
     if ((eIdle != iState) && (eRequestStarted != iState))
     {
         return HTTP_ERROR_API;
     }
 
-#ifdef PROXY_ENABLED
-    if (iProxyPort)
+    if (iConnectionClose || !iClient->connected())
     {
-        if (!iClient->connect(iProxyAddress, iProxyPort) > 0)
+        if (iServerName)
         {
+            if (!iClient->connect(iServerName, iServerPort) > 0)
+            {
 #ifdef LOGGING
-            Serial.println("Proxy connection failed");
+                Serial.println("Connection failed");
 #endif
-            return HTTP_ERROR_CONNECTION_FAILED;
+                return HTTP_ERROR_CONNECTION_FAILED;
+            }
+        }
+        else
+        {
+            if (!iClient->connect(iServerAddress, iServerPort) > 0)
+            {
+#ifdef LOGGING
+                Serial.println("Connection failed");
+#endif
+                return HTTP_ERROR_CONNECTION_FAILED;
+            }    
         }
     }
     else
-#endif
     {
-        if (!iClient->connect(aServerName, aServerPort) > 0)
-        {
 #ifdef LOGGING
-            Serial.println("Connection failed");
+        Serial.println("Connection already open");
 #endif
-            return HTTP_ERROR_CONNECTION_FAILED;
-        }
     }
 
     // Now we're connected, send the first part of the request
-    int ret = sendInitialHeaders(aServerName, IPAddress(0,0,0,0), aServerPort, aURLPath, aHttpMethod, aUserAgent);
-    if ((initialState == eIdle) && (HTTP_SUCCESS == ret))
+    int ret = sendInitialHeaders(aURLPath, aHttpMethod);
+
+    if (HTTP_SUCCESS == ret)
     {
-        // This was a simple version of the API, so terminate the headers now
-        finishHeaders();
+        if (aContentType)
+        {
+            sendHeader(HTTP_HEADER_CONTENT_TYPE, aContentType);
+        }
+
+        if (aContentLength > 0)
+        {
+            sendHeader(HTTP_HEADER_CONTENT_LENGTH, aContentLength);
+        }
+
+        bool hasBody = (aBody && aContentLength > 0);
+
+        if (initialState == eIdle || hasBody)
+        {
+            // This was a simple version of the API, so terminate the headers now
+            finishHeaders();
+        }
+        // else we'll call it in endRequest or in the first call to print, etc.
+
+        if (hasBody)
+        {
+                write(aBody, aContentLength);
+        }
     }
-    // else we'll call it in endRequest or in the first call to print, etc.
 
     return ret;
 }
 
-int HttpClient::startRequest(const IPAddress& aServerAddress, const char* aServerName, uint16_t aServerPort, const char* aURLPath, const char* aHttpMethod, const char* aUserAgent)
-{
-    tHttpState initialState = iState;
-    if ((eIdle != iState) && (eRequestStarted != iState))
-    {
-        return HTTP_ERROR_API;
-    }
-
-#ifdef PROXY_ENABLED
-    if (iProxyPort)
-    {
-        if (!iClient->connect(iProxyAddress, iProxyPort) > 0)
-        {
-#ifdef LOGGING
-            Serial.println("Proxy connection failed");
-#endif
-            return HTTP_ERROR_CONNECTION_FAILED;
-        }
-    }
-    else
-#endif
-    {
-        if (!iClient->connect(aServerAddress, aServerPort) > 0)
-        {
-#ifdef LOGGING
-            Serial.println("Connection failed");
-#endif
-            return HTTP_ERROR_CONNECTION_FAILED;
-        }
-    }
-
-    // Now we're connected, send the first part of the request
-    int ret = sendInitialHeaders(aServerName, aServerAddress, aServerPort, aURLPath, aHttpMethod, aUserAgent);
-    if ((initialState == eIdle) && (HTTP_SUCCESS == ret))
-    {
-        // This was a simple version of the API, so terminate the headers now
-        finishHeaders();
-    }
-    // else we'll call it in endRequest or in the first call to print, etc.
-
-    return ret;
-}
-
-int HttpClient::sendInitialHeaders(const char* aServerName, IPAddress aServerIP, uint16_t aPort, const char* aURLPath, const char* aHttpMethod, const char* aUserAgent)
+int HttpClient::sendInitialHeaders(const char* aURLPath, const char* aHttpMethod)
 {
 #ifdef LOGGING
     Serial.println("Connected");
@@ -150,54 +151,33 @@ int HttpClient::sendInitialHeaders(const char* aServerName, IPAddress aServerIP,
     // Send the HTTP command, i.e. "GET /somepath/ HTTP/1.0"
     iClient->print(aHttpMethod);
     iClient->print(" ");
-#ifdef PROXY_ENABLED
-    if (iProxyPort)
-    {
-      // We're going through a proxy, send a full URL
-      iClient->print("http://");
-      if (aServerName)
-      {
-        // We've got a server name, so use it
-        iClient->print(aServerName);
-      }
-      else
-      {
-        // We'll have to use the IP address
-        iClient->print(aServerIP);
-      }
-      if (aPort != kHttpPort)
-      {
-        iClient->print(":");
-        iClient->print(aPort);
-      }
-    }
-#endif
+
     iClient->print(aURLPath);
     iClient->println(" HTTP/1.1");
-    // The host header, if required
-    if (aServerName)
+    if (iSendDefaultRequestHeaders)
     {
-        iClient->print("Host: ");
-        iClient->print(aServerName);
-        if (aPort != kHttpPort)
+        // The host header, if required
+        if (iServerName)
         {
-          iClient->print(":");
-          iClient->print(aPort);
+            iClient->print("Host: ");
+            iClient->print(iServerName);
+            if (iServerPort != kHttpPort)
+            {
+              iClient->print(":");
+              iClient->print(iServerPort);
+            }
+            iClient->println();
         }
-        iClient->println();
-    }
-    // And user-agent string
-    if (aUserAgent)
-    {
-        sendHeader(HTTP_HEADER_USER_AGENT, aUserAgent);
-    }
-    else
-    {
+        // And user-agent string
         sendHeader(HTTP_HEADER_USER_AGENT, kUserAgent);
     }
-    // We don't support persistent connections, so tell the server to
-    // close this connection after we're done
-    sendHeader(HTTP_HEADER_CONNECTION, "close");
+
+    if (iConnectionClose)
+    {
+        // Tell the server to
+        // close this connection after we're done
+        sendHeader(HTTP_HEADER_CONNECTION, "close");
+    }
 
     // Everything has gone well
     iState = eRequestStarted;
@@ -278,7 +258,20 @@ void HttpClient::finishHeaders()
     iState = eRequestSent;
 }
 
+void HttpClient::flushClientRx()
+{
+    while (iClient->available())
+    {
+        iClient->read();
+    }
+}
+
 void HttpClient::endRequest()
+{
+    beginBody();
+}
+
+void HttpClient::beginBody()
 {
     if (iState < eRequestSent)
     {
@@ -286,6 +279,116 @@ void HttpClient::endRequest()
         finishHeaders();
     }
     // else the end of headers has already been sent, so nothing to do here
+}
+
+int HttpClient::get(const char* aURLPath)
+{
+    return startRequest(aURLPath, HTTP_METHOD_GET);
+}
+
+int HttpClient::get(const String& aURLPath)
+{
+    return get(aURLPath.c_str());
+}
+
+int HttpClient::post(const char* aURLPath)
+{
+    return startRequest(aURLPath, HTTP_METHOD_POST);
+}
+
+int HttpClient::post(const String& aURLPath)
+{
+    return post(aURLPath.c_str());
+}
+
+int HttpClient::post(const char* aURLPath, const char* aContentType, const char* aBody)
+{
+    return post(aURLPath, aContentType, strlen(aBody), (const byte*)aBody);
+}
+
+int HttpClient::post(const String& aURLPath, const String& aContentType, const String& aBody)
+{
+    return post(aURLPath.c_str(), aContentType.c_str(), aBody.length(), (const byte*)aBody.c_str());
+}
+
+int HttpClient::post(const char* aURLPath, const char* aContentType, int aContentLength, const byte aBody[])
+{
+    return startRequest(aURLPath, HTTP_METHOD_POST, aContentType, aContentLength, aBody);
+}
+
+int HttpClient::put(const char* aURLPath)
+{
+    return startRequest(aURLPath, HTTP_METHOD_PUT);
+}
+
+int HttpClient::put(const String& aURLPath)
+{
+    return put(aURLPath.c_str());
+}
+
+int HttpClient::put(const char* aURLPath, const char* aContentType, const char* aBody)
+{
+    return put(aURLPath, aContentType, strlen(aBody),  (const byte*)aBody);
+}
+
+int HttpClient::put(const String& aURLPath, const String& aContentType, const String& aBody)
+{
+    return put(aURLPath.c_str(), aContentType.c_str(), aBody.length(), (const byte*)aBody.c_str());
+}
+
+int HttpClient::put(const char* aURLPath, const char* aContentType, int aContentLength, const byte aBody[])
+{
+    return startRequest(aURLPath, HTTP_METHOD_PUT, aContentType, aContentLength, aBody);
+}
+
+int HttpClient::patch(const char* aURLPath)
+{
+    return startRequest(aURLPath, HTTP_METHOD_PATCH);
+}
+
+int HttpClient::patch(const String& aURLPath)
+{
+    return patch(aURLPath.c_str());
+}
+
+int HttpClient::patch(const char* aURLPath, const char* aContentType, const char* aBody)
+{
+    return patch(aURLPath, aContentType, strlen(aBody),  (const byte*)aBody);
+}
+
+int HttpClient::patch(const String& aURLPath, const String& aContentType, const String& aBody)
+{
+    return patch(aURLPath.c_str(), aContentType.c_str(), aBody.length(), (const byte*)aBody.c_str());
+}
+
+int HttpClient::patch(const char* aURLPath, const char* aContentType, int aContentLength, const byte aBody[])
+{
+    return startRequest(aURLPath, HTTP_METHOD_PATCH, aContentType, aContentLength, aBody);
+}
+
+int HttpClient::del(const char* aURLPath)
+{
+    return startRequest(aURLPath, HTTP_METHOD_DELETE);
+}
+
+int HttpClient::del(const String& aURLPath)
+{
+    return del(aURLPath.c_str());
+}
+
+int HttpClient::del(const char* aURLPath, const char* aContentType, const char* aBody)
+{
+    return del(aURLPath, aContentType, strlen(aBody),  (const byte*)aBody);
+}
+
+int HttpClient::del(const String& aURLPath, const String& aContentType, const String& aBody)
+{
+    return del(aURLPath.c_str(), aContentType.c_str(), aBody.length(), (const byte*)aBody.c_str());
+}
+
+int HttpClient::del(const char* aURLPath, const char* aContentType, int aContentLength, const byte aBody[])
+{
+    return startRequest(aURLPath, HTTP_METHOD_DELETE, aContentType, aContentLength, aBody);
 }
 
 int HttpClient::responseStatusCode()
@@ -299,7 +402,7 @@ int HttpClient::responseStatusCode()
     // Where HTTP-Version is of the form:
     //   HTTP-Version   = "HTTP" "/" 1*DIGIT "." 1*DIGIT
 
-    char c = '\0';
+    int c = '\0';
     do
     {
         // Make sure the status code is reset, and likewise the state.  This
@@ -358,6 +461,9 @@ int HttpClient::responseStatusCode()
                     case eStatusCodeRead:
                         // We're just waiting for the end of the line now
                         break;
+
+                    default:
+                        break;
                     };
                     // We read something, reset the timeout counter
                     timeoutStart = millis();
@@ -370,7 +476,7 @@ int HttpClient::responseStatusCode()
                 delay(kHttpWaitForDataDelay);
             }
         }
-        if ( (c == '\n') && (iStatusCode < 200) )
+        if ( (c == '\n') && (iStatusCode < 200 && iStatusCode != 101) )
         {
             // We've reached the end of an informational status line
             c = '\0'; // Clear c so we'll go back into the data reading loop
@@ -378,7 +484,7 @@ int HttpClient::responseStatusCode()
     }
     // If we've read a status code successfully but it's informational (1xx)
     // loop back to the start
-    while ( (iState == eStatusCodeRead) && (iStatusCode < 200) );
+    while ( (iState == eStatusCodeRead) && (iStatusCode < 200 && iStatusCode != 101) );
 
     if ( (c == '\n') && (iState == eStatusCodeRead) )
     {
@@ -431,6 +537,63 @@ int HttpClient::skipResponseHeaders()
     }
 }
 
+bool HttpClient::endOfHeadersReached()
+{
+    return (iState == eReadingBody || iState == eReadingChunkLength || iState == eReadingBodyChunk);
+};
+
+int HttpClient::contentLength()
+{
+    // skip the response headers, if they haven't been read already 
+    if (!endOfHeadersReached())
+    {
+        skipResponseHeaders();
+    }
+
+    return iContentLength;
+}
+
+String HttpClient::responseBody()
+{
+    int bodyLength = contentLength();
+    String response;
+
+    if (bodyLength > 0)
+    {
+        // try to reserve bodyLength bytes
+        if (response.reserve(bodyLength) == 0) {
+            // String reserve failed
+            return String((const char*)NULL);
+        }
+    }
+
+    // keep on timedRead'ing, until:
+    //  - we have a content length: body length equals consumed or no bytes
+    //                              available
+    //  - no content length:        no bytes are available
+    while (iBodyLengthConsumed != bodyLength)
+    {
+        int c = timedRead();
+
+        if (c == -1) {
+            // read timed out, done
+            break;
+        }
+
+        if (!response.concat((char)c)) {
+            // adding char failed
+            return String((const char*)NULL);
+        }
+    }
+
+    if (bodyLength > 0 && (unsigned int)bodyLength != response.length()) {
+        // failure, we did not read in reponse content length bytes
+        return String((const char*)NULL);
+    }
+
+    return response;
+}
+
 bool HttpClient::endOfBodyReached()
 {
     if (endOfHeadersReached() && (contentLength() != kNoContentLengthHeader))
@@ -441,32 +604,145 @@ bool HttpClient::endOfBodyReached()
     return false;
 }
 
-int HttpClient::read()
+int HttpClient::available()
 {
-#if 0 // Fails on WiFi because multi-byte read seems to be broken
-    uint8_t b[1];
-    int ret = read(b, 1);
-    if (ret == 1)
+    if (iState == eReadingChunkLength)
     {
-        return b[0];
+        while (iClient->available())
+        {
+            char c = iClient->read();
+
+            if (c == '\n')
+            {
+                iState = eReadingBodyChunk;
+                break;
+            }
+            else if (c == '\r')
+            {
+                // no-op
+            }
+            else if (isHexadecimalDigit(c))
+            {
+                char digit[2] = {c, '\0'};
+
+                iChunkLength = (iChunkLength * 16) + strtol(digit, NULL, 16);
+            }
+        }
+    }
+
+    if (iState == eReadingBodyChunk && iChunkLength == 0)
+    {
+        iState = eReadingChunkLength;
+    }
+    
+    if (iState == eReadingChunkLength)
+    {
+        return 0;
+    }
+    
+    int clientAvailable = iClient->available();
+
+    if (iState == eReadingBodyChunk)
+    {
+        return min(clientAvailable, iChunkLength);
     }
     else
     {
+        return clientAvailable;
+    }
+}
+
+
+int HttpClient::read()
+{
+    if (iIsChunked && !available())
+    {
         return -1;
     }
-#else
+
     int ret = iClient->read();
     if (ret >= 0)
     {
         if (endOfHeadersReached() && iContentLength > 0)
-	{
+        {
             // We're outputting the body now and we've seen a Content-Length header
             // So keep track of how many bytes are left
             iBodyLengthConsumed++;
-	}
+        }
+
+        if (iState == eReadingBodyChunk)
+        {
+            iChunkLength--;
+
+            if (iChunkLength == 0)
+            {
+                iState = eReadingChunkLength;
+            }
+        }
     }
     return ret;
-#endif
+}
+
+bool HttpClient::headerAvailable()
+{
+    // clear the currently store header line
+    iHeaderLine = "";
+
+    while (!endOfHeadersReached())
+    {
+        // read a byte from the header
+        int c = readHeader();
+
+        if (c == '\r' || c == '\n')
+        {
+            if (iHeaderLine.length())
+            {
+                // end of the line, all done
+                break;
+            } 
+            else
+            {
+                // ignore any CR or LF characters
+                continue;
+            }
+        }
+
+        // append byte to header line
+        iHeaderLine += (char)c;
+    }
+
+    return (iHeaderLine.length() > 0);
+}
+
+String HttpClient::readHeaderName()
+{
+    int colonIndex = iHeaderLine.indexOf(':');
+
+    if (colonIndex == -1)
+    {
+        return "";
+    }
+
+    return iHeaderLine.substring(0, colonIndex);
+}
+
+String HttpClient::readHeaderValue()
+{
+    int colonIndex = iHeaderLine.indexOf(':');
+    int startIndex = colonIndex + 1;
+
+    if (colonIndex == -1)
+    {
+        return "";
+    }
+
+    // trim any leading whitespace
+    while (startIndex < (int)iHeaderLine.length() && isSpace(iHeaderLine[startIndex]))
+    {
+        startIndex++;
+    }
+
+    return iHeaderLine.substring(startIndex);
 }
 
 int HttpClient::read(uint8_t *buf, size_t size)
@@ -477,9 +753,9 @@ int HttpClient::read(uint8_t *buf, size_t size)
         // We're outputting the body now and we've seen a Content-Length header
         // So keep track of how many bytes are left
         if (ret >= 0)
-	{
+        {
             iBodyLengthConsumed += ret;
-	}
+        }
     }
     return ret;
 }
@@ -513,9 +789,21 @@ int HttpClient::readHeader()
                 // Just in case we get multiple Content-Length headers, this
                 // will ensure we just get the value of the last one
                 iContentLength = 0;
+                iBodyLengthConsumed = 0;
             }
         }
-        else if ((iContentLengthPtr == kContentLengthPrefix) && (c == '\r'))
+        else if (*iTransferEncodingChunkedPtr == c)
+        {
+            // This character matches, just move along
+            iTransferEncodingChunkedPtr++;
+            if (*iTransferEncodingChunkedPtr == '\0')
+            {
+                // We've reached the end of the Transfer Encoding: chunked header
+                iIsChunked = true;
+                iState = eSkipToEndOfHeader;
+            }
+        }
+        else if (((iContentLengthPtr == kContentLengthPrefix) && (iTransferEncodingChunkedPtr == kTransferEncodingChunked)) && (c == '\r'))
         {
             // We've found a '\r' at the start of a line, so this is probably
             // the end of the headers
@@ -523,7 +811,7 @@ int HttpClient::readHeader()
         }
         else
         {
-            // This isn't the Content-Length header, skip to the end of the line
+            // This isn't the Content-Length or Transfer Encoding chunked header, skip to the end of the line
             iState = eSkipToEndOfHeader;
         }
         break;
@@ -543,7 +831,15 @@ int HttpClient::readHeader()
     case eLineStartingCRFound:
         if (c == '\n')
         {
-            iState = eReadingBody;
+            if (iIsChunked)
+            {
+                iState = eReadingChunkLength;
+                iChunkLength = 0;
+            }
+            else
+            {
+                iState = eReadingBody;
+            }
         }
         break;
     default:
@@ -556,6 +852,7 @@ int HttpClient::readHeader()
         // We've got to the end of this line, start processing again
         iState = eStatusCodeRead;
         iContentLengthPtr = kContentLengthPrefix;
+        iTransferEncodingChunkedPtr = kTransferEncodingChunked;
     }
     // And return the character read to whoever wants it
     return c;
