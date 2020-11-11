@@ -91,7 +91,6 @@
 // Get weather status.
 int WeatherService::getWeatherStatus(Client *client) {
 
-    int err = 0;
     // Name of the server we want to connect to
     const char kHostname[] = "nm-solution-ltd-staging.azurewebsites.net";
 
