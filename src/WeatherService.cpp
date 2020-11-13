@@ -92,7 +92,7 @@
 int WeatherService::getWeatherStatus(Client *client) {
 
     // Name of the server we want to connect to
-    const char kHostname[] = "93ffc87842ee.ngrok.io";
+    const char kHostname[] = "sensorapi.conveyor.cloud";
 
     // Path to download (this is the bit after the hostname in the URL
     // that you want to download
@@ -107,7 +107,7 @@ int WeatherService::getWeatherStatus(Client *client) {
     StaticJsonDocument<128> document;
     document["cityCode"] = "HANOI";
 
-    HttpResponse httpResponse = this->sendRequest(client, kHostname, 80, HTTP_METHOD_POST, kPath, &document);
+    HttpResponse httpResponse = this->sendRequest(client, kHostname, 443, HTTP_METHOD_POST, kPath, &document);
 
     Serial.print("Http status code: ");
     Serial.println(httpResponse.getStatusCode());
